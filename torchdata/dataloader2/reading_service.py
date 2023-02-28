@@ -19,6 +19,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 
 from torch.utils.data.datapipes.iter.sharding import SHARDING_PRIORITIES
+from torch.utils.data.datapipes.utils.snapshot import _simple_graph_snapshot_restoration
 
 from torchdata._constants import default_dl2_worker_join_timeout_in_s, default_timeout_in_s
 from torchdata.dataloader2 import communication
@@ -213,6 +214,7 @@ class MultiProcessingReadingService(ReadingServiceInterface):
         self._main_prefetch_datapipe = None
         self._end_datapipe = None
         self._mp = num_workers > 0
+        self._initial_seed = None
 
     def initialize(self, datapipe: DataPipe) -> DataPipe:
         r"""
@@ -313,9 +315,17 @@ class MultiProcessingReadingService(ReadingServiceInterface):
     def initialize_iteration(
         self, seed_generator: SeedGenerator, iter_reset_fn: Optional[Callable[[DataPipe], DataPipe]] = None
     ) -> Optional[Callable[[DataPipe], DataPipe]]:
+
+        # TODO: Store the initial state of generator here
+        self._initial_seed = seed_generator
+
         assert self._end_datapipe is not None
 
         set_graph_random_seed(self._end_datapipe, seed_generator)
+
+        assert self.end_datapipe is not None
+
+        set_graph_random_seed(self.end_datapipe, seed_generator)
 
         if self._mp:
             if self.main_prefetch_cnt > 0:
@@ -412,6 +422,15 @@ class MultiProcessingReadingService(ReadingServiceInterface):
         the limit operation, such that nothing needs to be done here.
         """
         pass
+
+    def _get_naive_datapipe_snapshot(self):
+        return self.end_datapipe._number_of_samples_yielded, self._initial_seed
+
+    def _restore_naive_datapipe_snapshot(self, n_samples_yielded, initial_seed):
+        initial_seed_generator = torch.Generator()
+        initial_seed_generator.manual_seed(initial_seed)
+        _simple_graph_snapshot_restoration(self.end_datapipe, n_samples_yielded, initial_seed_generator)
+        # TODO: I might want to skip `initialize_iteration` after this????
 
 
 class DistributedReadingService(ReadingServiceInterface):
